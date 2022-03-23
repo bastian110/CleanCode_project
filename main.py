@@ -1,7 +1,9 @@
-__credits__ = ["Carlos Luis"]
-
+"""
+http://incompleteideas.net/MountainCar/MountainCar1.cp
+permalink: https://perma.cc/6Z2N-PFWC
+"""
+import math
 from typing import Optional
-from os import path
 
 import numpy as np
 import pygame
@@ -11,200 +13,214 @@ import gym
 from gym import spaces
 from gym.utils import seeding
 
-#test
 
-
-class PendulumEnv(gym.Env):
+class MountainCarEnv(gym.Env):
     """
-       ### Description
+    ### Description
 
-    The inverted pendulum swingup problem is based on the classic problem in control theory. The system consists of a pendulum attached at one end to a fixed point, and the other end being free. The pendulum starts in a random position and the goal is to apply torque on the free end to swing it into an upright position, with its center of gravity right above the fixed point.
+    The Mountain Car MDP is a deterministic MDP that consists of a car placed stochastically
+    at the bottom of a sinusoidal valley, with the only possible actions being the accelerations
+    that can be applied to the car in either direction. The goal of the MDP is to strategically
+    accelerate the car to reach the goal state on top of the right hill. There are two versions
+    of the mountain car domain in gym: one with discrete actions and one with continuous.
+    This version is the one with discrete actions.
 
-    The diagram below specifies the coordinate system used for the implementation of the pendulum's
-    dynamic equations.
+    This MDP first appeared in [Andrew Moore's PhD Thesis (1990)](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-209.pdf)
 
-    ![Pendulum Coordinate System](./diagrams/pendulum.png)
-
-    -  `x-y`: cartesian coordinates of the pendulum's end in meters.
-    - `theta` : angle in radians.
-    - `tau`: torque in `N m`. Defined as positive _counter-clockwise_.
-
-    ### Action Space
-
-    The action is a `ndarray` with shape `(1,)` representing the torque applied to free end of the pendulum.
-
-    | Num | Action | Min  | Max |
-    |-----|--------|------|-----|
-    | 0   | Torque | -2.0 | 2.0 |
-
+    ```
+    @TECHREPORT{Moore90efficientmemory-based,
+        author = {Andrew William Moore},
+        title = {Efficient Memory-based Learning for Robot Control},
+        institution = {University of Cambridge},
+        year = {1990}
+    }
+    ```
 
     ### Observation Space
 
-    The observation is a `ndarray` with shape `(3,)` representing the x-y coordinates of the pendulum's free end and its angular velocity.
+    The observation is a `ndarray` with shape `(2,)` where the elements correspond to the following:
 
-    | Num | Observation      | Min  | Max |
-    |-----|------------------|------|-----|
-    | 0   | x = cos(theta)   | -1.0 | 1.0 |
-    | 1   | y = sin(angle)   | -1.0 | 1.0 |
-    | 2   | Angular Velocity | -8.0 | 8.0 |
+    | Num | Observation                                                 | Min                | Max    | Unit |
+    |-----|-------------------------------------------------------------|--------------------|--------|------|
+    | 0   | position of the car along the x-axis                        | -Inf               | Inf    | position (m) |
+    | 1   | velocity of the car                                         | -Inf               | Inf  | position (m) |
 
-    ### Rewards
+    ### Action Space
 
-    The reward function is defined as:
+    There are 3 discrete deterministic actions:
 
-    *r = -(theta<sup>2</sup> + 0.1 * theta_dt<sup>2</sup> + 0.001 * torque<sup>2</sup>)*
+    | Num | Observation                                                 | Value   | Unit |
+    |-----|-------------------------------------------------------------|---------|------|
+    | 0   | Accelerate to the left                                      | Inf    | position (m) |
+    | 1   | Don't accelerate                                            | Inf  | position (m) |
+    | 2   | Accelerate to the right                                     | Inf    | position (m) |
 
-    where `$\theta$` is the pendulum's angle normalized between *[-pi, pi]* (with 0 being in the upright position).
-    Based on the above equation, the minimum reward that can be obtained is *-(pi<sup>2</sup> + 0.1 * 8<sup>2</sup> + 0.001 * 2<sup>2</sup>) = -16.2736044*, while the maximum reward is zero (pendulum is
-    upright with zero velocity and no torque applied).
+    ### Transition Dynamics:
+
+    Given an action, the mountain car follows the following transition dynamics:
+
+    *velocity<sub>t+1</sub> = velocity<sub>t</sub> + (action - 1) * force - cos(3 * position<sub>t</sub>) * gravity*
+
+    *position<sub>t+1</sub> = position<sub>t</sub> + velocity<sub>t+1</sub>*
+
+    where force = 0.001 and gravity = 0.0025. The collisions at either end are inelastic with the velocity set to 0 upon collision with the wall. The position is clipped to the range `[-1.2, 0.6]` and velocity is clipped to the range `[-0.07, 0.07]`.
+
+
+    ### Reward:
+
+    The goal is to reach the flag placed on top of the right hill as quickly as possible, as such the agent is penalised with a reward of -1 for each timestep it isn't at the goal and is not penalised (reward = 0) for when it reaches the goal.
 
     ### Starting State
 
-    The starting state is a random angle in *[-pi, pi]* and a random angular velocity in *[-1,1]*.
+    The position of the car is assigned a uniform random value in *[-0.6 , -0.4]*. The starting velocity of the car is always assigned to 0.
 
     ### Episode Termination
 
-    The episode terminates at 200 time steps.
+    The episode terminates if either of the following happens:
+    1. The position of the car is greater than or equal to 0.5 (the goal position on top of the right hill)
+    2. The length of the episode is 200.
+
 
     ### Arguments
 
-    - `g`: acceleration of gravity measured in *(m s<sup>-2</sup>)* used to calculate the pendulum dynamics. The default value is g = 10.0 .
-
     ```
-    gym.make('Pendulum-v1', g=9.81)
+    gym.make('MountainCar-v0')
     ```
 
     ### Version History
 
-    * v1: Simplify the math equations, no difference in behavior.
     * v0: Initial versions release (1.0.0)
-
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
 
-    def __init__(self, g=10.0):
-        self.max_speed = 8
-        self.max_torque = 2.0
-        self.dt = 0.05
-        self.g = g
-        self.m = 1.0
-        self.l = 1.0
+    def __init__(self, goal_velocity=0):
+        self.min_position = -1.2
+        self.max_position = 0.6
+        self.max_speed = 0.07
+        self.goal_position = 0.5
+        self.goal_velocity = goal_velocity
+
+        self.force = 0.001
+        self.gravity = 0.0025
+
+        self.low = np.array([self.min_position, -self.max_speed], dtype=np.float32)
+        self.high = np.array([self.max_position, self.max_speed], dtype=np.float32)
+
         self.screen = None
         self.clock = None
         self.isopen = True
 
-        self.screen_dim = 500
+        self.action_space = spaces.Discrete(3)
+        self.observation_space = spaces.Box(self.low, self.high, dtype=np.float32)
 
-        high = np.array([1.0, 1.0, self.max_speed], dtype=np.float32)
-        # This will throw a warning in tests/envs/test_envs in utils/env_checker.py as the space is not symmetric
-        #   or normalised as max_torque == 2 by default. Ignoring the issue here as the default settings are too old
-        #   to update to follow the openai gym api
-        self.action_space = spaces.Box(
-            low=-self.max_torque, high=self.max_torque, shape=(1,), dtype=np.float32
-        )
-        self.observation_space = spaces.Box(low=-high, high=high, dtype=np.float32)
+    def step(self, action):
+        assert self.action_space.contains(
+            action
+        ), f"{action!r} ({type(action)}) invalid"
 
-    def step(self, u):
-        th, thdot = self.state  # th := theta
+        position, velocity = self.state
+        velocity += (action - 1) * self.force + math.cos(3 * position) * (-self.gravity)
+        velocity = np.clip(velocity, -self.max_speed, self.max_speed)
+        position += velocity
+        position = np.clip(position, self.min_position, self.max_position)
+        if position == self.min_position and velocity < 0:
+            velocity = 0
 
-        g = self.g
-        m = self.m
-        l = self.l
-        dt = self.dt
+        done = bool(position >= self.goal_position and velocity >= self.goal_velocity)
+        reward = -1.0
 
-        u = np.clip(u, -self.max_torque, self.max_torque)[0]
-        self.last_u = u  # for rendering
-        costs = angle_normalize(th) ** 2 + 0.1 * thdot ** 2 + 0.001 * (u ** 2)
-
-        newthdot = thdot + (3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l ** 2) * u) * dt
-        newthdot = np.clip(newthdot, -self.max_speed, self.max_speed)
-        newth = th + newthdot * dt
-
-        self.state = np.array([newth, newthdot])
-        return self._get_obs(), -costs, False, {}
+        self.state = (position, velocity)
+        return np.array(self.state, dtype=np.float32), reward, done, {}
 
     def reset(
         self,
         *,
         seed: Optional[int] = None,
         return_info: bool = False,
-        options: Optional[dict] = None
+        options: Optional[dict] = None,
     ):
         super().reset(seed=seed)
-        high = np.array([np.pi, 1])
-        self.state = self.np_random.uniform(low=-high, high=high)
-        self.last_u = None
+        self.state = np.array([self.np_random.uniform(low=-0.6, high=-0.4), 0])
         if not return_info:
-            return self._get_obs()
+            return np.array(self.state, dtype=np.float32)
         else:
-            return self._get_obs(), {}
+            return np.array(self.state, dtype=np.float32), {}
 
-    def _get_obs(self):
-        theta, thetadot = self.state
-        return np.array([np.cos(theta), np.sin(theta), thetadot], dtype=np.float32)
+    def _height(self, xs):
+        return np.sin(3 * xs) * 0.45 + 0.55
 
     def render(self, mode="human"):
+        screen_width = 600
+        screen_height = 400
+
+        world_width = self.max_position - self.min_position
+        scale = screen_width / world_width
+        carwidth = 40
+        carheight = 20
         if self.screen is None:
             pygame.init()
             pygame.display.init()
-            self.screen = pygame.display.set_mode((self.screen_dim, self.screen_dim))
+            self.screen = pygame.display.set_mode((screen_width, screen_height))
         if self.clock is None:
             self.clock = pygame.time.Clock()
 
-        self.surf = pygame.Surface((self.screen_dim, self.screen_dim))
+        self.surf = pygame.Surface((screen_width, screen_height))
         self.surf.fill((255, 255, 255))
 
-        bound = 2.2
-        scale = self.screen_dim / (bound * 2)
-        offset = self.screen_dim // 2
+        pos = self.state[0]
 
-        rod_length = 1 * scale
-        rod_width = 0.2 * scale
-        l, r, t, b = 0, rod_length, rod_width / 2, -rod_width / 2
-        coords = [(l, b), (l, t), (r, t), (r, b)]
-        transformed_coords = []
-        for c in coords:
-            c = pygame.math.Vector2(c).rotate_rad(self.state[0] + np.pi / 2)
-            c = (c[0] + offset, c[1] + offset)
-            transformed_coords.append(c)
-        gfxdraw.aapolygon(self.surf, transformed_coords, (204, 77, 77))
-        gfxdraw.filled_polygon(self.surf, transformed_coords, (204, 77, 77))
+        xs = np.linspace(self.min_position, self.max_position, 100)
+        ys = self._height(xs)
+        xys = list(zip((xs - self.min_position) * scale, ys * scale))
 
-        gfxdraw.aacircle(self.surf, offset, offset, int(rod_width / 2), (204, 77, 77))
-        gfxdraw.filled_circle(
-            self.surf, offset, offset, int(rod_width / 2), (204, 77, 77)
-        )
+        pygame.draw.aalines(self.surf, points=xys, closed=False, color=(0, 0, 0))
 
-        rod_end = (rod_length, 0)
-        rod_end = pygame.math.Vector2(rod_end).rotate_rad(self.state[0] + np.pi / 2)
-        rod_end = (int(rod_end[0] + offset), int(rod_end[1] + offset))
-        gfxdraw.aacircle(
-            self.surf, rod_end[0], rod_end[1], int(rod_width / 2), (204, 77, 77)
-        )
-        gfxdraw.filled_circle(
-            self.surf, rod_end[0], rod_end[1], int(rod_width / 2), (204, 77, 77)
-        )
+        clearance = 10
 
-        fname = path.join(path.dirname(__file__), "assets/clockwise.png")
-        img = pygame.image.load(fname)
-        if self.last_u is not None:
-            scale_img = pygame.transform.smoothscale(
-                img, (scale * np.abs(self.last_u) / 2, scale * np.abs(self.last_u) / 2)
-            )
-            is_flip = bool(self.last_u > 0)
-            scale_img = pygame.transform.flip(scale_img, is_flip, True)
-            self.surf.blit(
-                scale_img,
+        l, r, t, b = -carwidth / 2, carwidth / 2, carheight, 0
+        coords = []
+        for c in [(l, b), (l, t), (r, t), (r, b)]:
+            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
+            coords.append(
                 (
-                    offset - scale_img.get_rect().centerx,
-                    offset - scale_img.get_rect().centery,
-                ),
+                    c[0] + (pos - self.min_position) * scale,
+                    c[1] + clearance + self._height(pos) * scale,
+                )
             )
 
-        # drawing axle
-        gfxdraw.aacircle(self.surf, offset, offset, int(0.05 * scale), (0, 0, 0))
-        gfxdraw.filled_circle(self.surf, offset, offset, int(0.05 * scale), (0, 0, 0))
+        gfxdraw.aapolygon(self.surf, coords, (0, 0, 0))
+        gfxdraw.filled_polygon(self.surf, coords, (0, 0, 0))
+
+        for c in [(carwidth / 4, 0), (-carwidth / 4, 0)]:
+            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
+            wheel = (
+                int(c[0] + (pos - self.min_position) * scale),
+                int(c[1] + clearance + self._height(pos) * scale),
+            )
+
+            gfxdraw.aacircle(
+                self.surf, wheel[0], wheel[1], int(carheight / 2.5), (128, 128, 128)
+            )
+            gfxdraw.filled_circle(
+                self.surf, wheel[0], wheel[1], int(carheight / 2.5), (128, 128, 128)
+            )
+
+        flagx = int((self.goal_position - self.min_position) * scale)
+        flagy1 = int(self._height(self.goal_position) * scale)
+        flagy2 = flagy1 + 50
+        gfxdraw.vline(self.surf, flagx, flagy1, flagy2, (0, 0, 0))
+
+        gfxdraw.aapolygon(
+            self.surf,
+            [(flagx, flagy2), (flagx, flagy2 - 10), (flagx + 25, flagy2 - 5)],
+            (204, 204, 0),
+        )
+        gfxdraw.filled_polygon(
+            self.surf,
+            [(flagx, flagy2), (flagx, flagy2 - 10), (flagx + 25, flagy2 - 5)],
+            (204, 204, 0),
+        )
 
         self.surf = pygame.transform.flip(self.surf, False, True)
         self.screen.blit(self.surf, (0, 0))
@@ -220,12 +236,12 @@ class PendulumEnv(gym.Env):
         else:
             return self.isopen
 
+    def get_keys_to_action(self):
+        # Control with left and right arrow keys.
+        return {(): 1, (276,): 0, (275,): 2, (275, 276): 1}
+
     def close(self):
         if self.screen is not None:
             pygame.display.quit()
             pygame.quit()
             self.isopen = False
-
-
-def angle_normalize(x):
-    return ((x + np.pi) % (2 * np.pi)) - np.pi
