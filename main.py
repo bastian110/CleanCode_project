@@ -1,136 +1,174 @@
 """
-http://incompleteideas.net/MountainCar/MountainCar1.cp
-permalink: https://perma.cc/6Z2N-PFWC
+Classic cart-pole system implemented by Rich Sutton et al.
+Copied from http://incompleteideas.net/sutton/book/code/pole.c
+permalink: https://perma.cc/C9ZM-652R
 """
 import math
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import pygame
 from pygame import gfxdraw
 
 import gym
-from gym import spaces
+from gym import spaces, logger
 from gym.utils import seeding
-#test
 
-class MountainCarEnv(gym.Env):
+
+class CartPoleEnv(gym.Env[np.ndarray, Union[int, np.ndarray]]):
     """
     ### Description
 
-    The Mountain Car MDP is a deterministic MDP that consists of a car placed stochastically
-    at the bottom of a sinusoidal valley, with the only possible actions being the accelerations
-    that can be applied to the car in either direction. The goal of the MDP is to strategically
-    accelerate the car to reach the goal state on top of the right hill. There are two versions
-    of the mountain car domain in gym: one with discrete actions and one with continuous.
-    This version is the one with discrete actions.
-
-    This MDP first appeared in [Andrew Moore's PhD Thesis (1990)](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-209.pdf)
-
-    ```
-    @TECHREPORT{Moore90efficientmemory-based,
-        author = {Andrew William Moore},
-        title = {Efficient Memory-based Learning for Robot Control},
-        institution = {University of Cambridge},
-        year = {1990}
-    }
-    ```
-
-    ### Observation Space
-
-    The observation is a `ndarray` with shape `(2,)` where the elements correspond to the following:
-
-    | Num | Observation                                                 | Min                | Max    | Unit |
-    |-----|-------------------------------------------------------------|--------------------|--------|------|
-    | 0   | position of the car along the x-axis                        | -Inf               | Inf    | position (m) |
-    | 1   | velocity of the car                                         | -Inf               | Inf  | position (m) |
+    This environment corresponds to the version of the cart-pole problem
+    described by Barto, Sutton, and Anderson in ["Neuronlike Adaptive Elements That Can Solve Difficult Learning Control Problem"](https://ieeexplore.ieee.org/document/6313077).
+    A pole is attached by an un-actuated joint to a cart, which moves along a
+    frictionless track. The pendulum is placed upright on the cart and the goal is to balance the pole by applying forces in the left and right direction on the cart.
 
     ### Action Space
 
-    There are 3 discrete deterministic actions:
+    The action is a `ndarray` with shape `(1,)` which can take values `{0, 1}` indicating the direction of the fixed force the cart is pushed with.
 
-    | Num | Observation                                                 | Value   | Unit |
-    |-----|-------------------------------------------------------------|---------|------|
-    | 0   | Accelerate to the left                                      | Inf    | position (m) |
-    | 1   | Don't accelerate                                            | Inf  | position (m) |
-    | 2   | Accelerate to the right                                     | Inf    | position (m) |
+    | Num | Action                 |
+    |-----|------------------------|
+    | 0   | Push cart to the left  |
+    | 1   | Push cart to the right |
 
-    ### Transition Dynamics:
+    **Note**: The velocity that is reduced or increased by the applied force is not fixed and it depends on the angle the pole is pointing. The center of gravity_of_the_simulation of the pole varies the amount of energy needed to move the cart underneath it
 
-    Given an action, the mountain car follows the following transition dynamics:
+    ### Observation Space
 
-    *velocity<sub>t+1</sub> = velocity<sub>t</sub> + (action - 1) * force - cos(3 * position<sub>t</sub>) * gravity*
+    The observation is a `ndarray` with shape `(4,)` with the values corresponding to the following positions and velocities:
 
-    *position<sub>t+1</sub> = position<sub>t</sub> + velocity<sub>t+1</sub>*
+    | Num | Observation           | Min                  | Max                |
+    |-----|-----------------------|----------------------|--------------------|
+    | 0   | Cart Position         | -4.8                 | 4.8                |
+    | 1   | Cart Velocity         | -Inf                 | Inf                |
+    | 2   | Pole Angle            | ~ -0.418 rad (-24°)  | ~ 0.418 rad (24°)  |
+    | 3   | Pole Angular Velocity | -Inf                 | Inf                |
 
-    where force = 0.001 and gravity = 0.0025. The collisions at either end are inelastic with the velocity set to 0 upon collision with the wall. The position is clipped to the range `[-1.2, 0.6]` and velocity is clipped to the range `[-0.07, 0.07]`.
+    **Note:** While the ranges above denote the possible values for observation space of each element, it is not reflective of the allowed values of the state space in an unterminated episode. Particularly:
+    -  The cart x-position (index 0) can be take values between `(-4.8, 4.8)`, but the episode terminates if the cart leaves the `(-2.4, 2.4)` range.
+    -  The pole angle can be observed between  `(-.418, .418)` radians (or **±24°**), but the episode terminates if the pole angle is not in the range `(-.2095, .2095)` (or **±12°**)
 
+    ### Rewards
 
-    ### Reward:
-
-    The goal is to reach the flag placed on top of the right hill as quickly as possible, as such the agent is penalised with a reward of -1 for each timestep it isn't at the goal and is not penalised (reward = 0) for when it reaches the goal.
+    Since the goal is to keep the pole upright for as long as possible, a reward of `+1` for every step taken, including the termination step, is allotted. The threshold for rewards is 475 for v1.
 
     ### Starting State
 
-    The position of the car is assigned a uniform random value in *[-0.6 , -0.4]*. The starting velocity of the car is always assigned to 0.
+    All observations are assigned a uniformly random value in `(-0.05, 0.05)`
 
     ### Episode Termination
 
-    The episode terminates if either of the following happens:
-    1. The position of the car is greater than or equal to 0.5 (the goal position on top of the right hill)
-    2. The length of the episode is 200.
-
+    The episode terminates if any one of the following occurs:
+    1. Pole Angle is greater than ±12°
+    2. Cart Position is greater than ±2.4 (center of the cart reaches the edge of the display)
+    3. Episode length is greater than 500 (200 for v0)
 
     ### Arguments
 
     ```
-    gym.make('MountainCar-v0')
+    gym.make('CartPole-v1')
     ```
 
-    ### Version History
-
-    * v0: Initial versions release (1.0.0)
+    No additional arguments are currently supported.
     """
 
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 50}
 
-    def __init__(self, goal_velocity=0):
-        self.min_position = -1.2
-        self.max_position = 0.6
-        self.max_speed = 0.07
-        self.goal_position = 0.5
-        self.goal_velocity = goal_velocity
+    def __init__(self):
+        self.gravity_of_the_simulation = 9.8
+        self.mass_of_the_cart = 1.0
+        self.mass_of_the_pole = 0.1
+        self.total_mass = self.mass_of_the_pole + self.mass_of_the_cart
+        self.length = 0.5  # actually half the pole's length
+        self.polemass_length = self.mass_of_the_pole * self.length
+        self.force_mag = 10.0
+        self.tau = 0.02  # seconds between state updates
+        self.kinematics_integrator = "euler"
 
-        self.force = 0.001
-        self.gravity = 0.0025
+        # Angle at which to fail the episode
+        self.theta_threshold_radians = 12 * 2 * math.pi / 360
+        self.x_threshold = 2.4
 
-        self.low = np.array([self.min_position, -self.max_speed], dtype=np.float32)
-        self.high = np.array([self.max_position, self.max_speed], dtype=np.float32)
+        # Angle limit set to 2 * theta_threshold_radians so failing observation
+        # is still within bounds.
+        high = np.array(
+            [
+                self.x_threshold * 2,
+                np.finfo(np.float32).max,
+                self.theta_threshold_radians * 2,
+                np.finfo(np.float32).max,
+            ],
+            dtype=np.float32,
+        )
+
+        self.action_space = spaces.Discrete(2)
+        self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
         self.screen = None
         self.clock = None
         self.isopen = True
+        self.state = None
 
-        self.action_space = spaces.Discrete(3)
-        self.observation_space = spaces.Box(self.low, self.high, dtype=np.float32)
+        self.steps_beyond_done = None
 
     def step(self, action):
-        assert self.action_space.contains(
-            action
-        ), f"{action!r} ({type(action)}) invalid"
+        err_msg = f"{action!r} ({type(action)}) invalid"
+        assert self.action_space.contains(action), err_msg
+        assert self.state is not None, "Call reset before using step method."
+        x, x_dot, theta, theta_dot = self.state
+        force = self.force_mag if action == 1 else -self.force_mag
+        costheta = math.cos(theta)
+        sintheta = math.sin(theta)
 
-        position, velocity = self.state
-        velocity += (action - 1) * self.force + math.cos(3 * position) * (-self.gravity)
-        velocity = np.clip(velocity, -self.max_speed, self.max_speed)
-        position += velocity
-        position = np.clip(position, self.min_position, self.max_position)
-        if position == self.min_position and velocity < 0:
-            velocity = 0
+        # For the interested reader:
+        # https://coneural.org/florian/papers/05_cart_pole.pdf
+        temp = (
+            force + self.polemass_length * theta_dot ** 2 * sintheta
+        ) / self.total_mass
+        thetaacc = (self.gravity_of_the_simulation * sintheta - costheta * temp) / (
+            self.length * (4.0 / 3.0 - self.mass_of_the_pole * costheta ** 2 / self.total_mass)
+        )
+        xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
 
-        done = bool(position >= self.goal_position and velocity >= self.goal_velocity)
-        reward = -1.0
+        if self.kinematics_integrator == "euler":
+            x = x + self.tau * x_dot
+            x_dot = x_dot + self.tau * xacc
+            theta = theta + self.tau * theta_dot
+            theta_dot = theta_dot + self.tau * thetaacc
+        else:  # semi-implicit euler
+            x_dot = x_dot + self.tau * xacc
+            x = x + self.tau * x_dot
+            theta_dot = theta_dot + self.tau * thetaacc
+            theta = theta + self.tau * theta_dot
 
-        self.state = (position, velocity)
+        self.state = (x, x_dot, theta, theta_dot)
+
+        done = bool(
+            x < -self.x_threshold
+            or x > self.x_threshold
+            or theta < -self.theta_threshold_radians
+            or theta > self.theta_threshold_radians
+        )
+
+        if not done:
+            reward = 1.0
+        elif self.steps_beyond_done is None:
+            # Pole just fell!
+            self.steps_beyond_done = 0
+            reward = 1.0
+        else:
+            if self.steps_beyond_done == 0:
+                logger.warn(
+                    "You are calling 'step()' even though this "
+                    "environment has already returned done = True. You "
+                    "should always call 'reset()' once you receive 'done = "
+                    "True' -- any further steps are undefined behavior."
+                )
+            self.steps_beyond_done += 1
+            reward = 0.0
+
         return np.array(self.state, dtype=np.float32), reward, done, {}
 
     def reset(
@@ -141,23 +179,29 @@ class MountainCarEnv(gym.Env):
         options: Optional[dict] = None,
     ):
         super().reset(seed=seed)
-        self.state = np.array([self.np_random.uniform(low=-0.6, high=-0.4), 0])
+        self.state = self.np_random.uniform(low=-0.05, high=0.05, size=(4,))
+        self.steps_beyond_done = None
         if not return_info:
             return np.array(self.state, dtype=np.float32)
         else:
             return np.array(self.state, dtype=np.float32), {}
 
-    def _height(self, xs):
-        return np.sin(3 * xs) * 0.45 + 0.55
-
     def render(self, mode="human"):
         screen_width = 600
         screen_height = 400
 
-        world_width = self.max_position - self.min_position
+        world_width = self.x_threshold * 2
         scale = screen_width / world_width
-        carwidth = 40
-        carheight = 20
+        polewidth = 10.0
+        polelen = scale * (2 * self.length)
+        cartwidth = 50.0
+        cartheight = 30.0
+
+        if self.state is None:
+            return None
+
+        x = self.state
+
         if self.screen is None:
             pygame.init()
             pygame.display.init()
@@ -168,59 +212,46 @@ class MountainCarEnv(gym.Env):
         self.surf = pygame.Surface((screen_width, screen_height))
         self.surf.fill((255, 255, 255))
 
-        pos = self.state[0]
+        l, r, t, b = -cartwidth / 2, cartwidth / 2, cartheight / 2, -cartheight / 2
+        axleoffset = cartheight / 4.0
+        cartx = x[0] * scale + screen_width / 2.0  # MIDDLE OF CART
+        carty = 100  # TOP OF CART
+        cart_coords = [(l, b), (l, t), (r, t), (r, b)]
+        cart_coords = [(c[0] + cartx, c[1] + carty) for c in cart_coords]
+        gfxdraw.aapolygon(self.surf, cart_coords, (0, 0, 0))
+        gfxdraw.filled_polygon(self.surf, cart_coords, (0, 0, 0))
 
-        xs = np.linspace(self.min_position, self.max_position, 100)
-        ys = self._height(xs)
-        xys = list(zip((xs - self.min_position) * scale, ys * scale))
-
-        pygame.draw.aalines(self.surf, points=xys, closed=False, color=(0, 0, 0))
-
-        clearance = 10
-
-        l, r, t, b = -carwidth / 2, carwidth / 2, carheight, 0
-        coords = []
-        for c in [(l, b), (l, t), (r, t), (r, b)]:
-            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
-            coords.append(
-                (
-                    c[0] + (pos - self.min_position) * scale,
-                    c[1] + clearance + self._height(pos) * scale,
-                )
-            )
-
-        gfxdraw.aapolygon(self.surf, coords, (0, 0, 0))
-        gfxdraw.filled_polygon(self.surf, coords, (0, 0, 0))
-
-        for c in [(carwidth / 4, 0), (-carwidth / 4, 0)]:
-            c = pygame.math.Vector2(c).rotate_rad(math.cos(3 * pos))
-            wheel = (
-                int(c[0] + (pos - self.min_position) * scale),
-                int(c[1] + clearance + self._height(pos) * scale),
-            )
-
-            gfxdraw.aacircle(
-                self.surf, wheel[0], wheel[1], int(carheight / 2.5), (128, 128, 128)
-            )
-            gfxdraw.filled_circle(
-                self.surf, wheel[0], wheel[1], int(carheight / 2.5), (128, 128, 128)
-            )
-
-        flagx = int((self.goal_position - self.min_position) * scale)
-        flagy1 = int(self._height(self.goal_position) * scale)
-        flagy2 = flagy1 + 50
-        gfxdraw.vline(self.surf, flagx, flagy1, flagy2, (0, 0, 0))
-
-        gfxdraw.aapolygon(
-            self.surf,
-            [(flagx, flagy2), (flagx, flagy2 - 10), (flagx + 25, flagy2 - 5)],
-            (204, 204, 0),
+        l, r, t, b = (
+            -polewidth / 2,
+            polewidth / 2,
+            polelen - polewidth / 2,
+            -polewidth / 2,
         )
-        gfxdraw.filled_polygon(
+
+        pole_coords = []
+        for coord in [(l, b), (l, t), (r, t), (r, b)]:
+            coord = pygame.math.Vector2(coord).rotate_rad(-x[2])
+            coord = (coord[0] + cartx, coord[1] + carty + axleoffset)
+            pole_coords.append(coord)
+        gfxdraw.aapolygon(self.surf, pole_coords, (202, 152, 101))
+        gfxdraw.filled_polygon(self.surf, pole_coords, (202, 152, 101))
+
+        gfxdraw.aacircle(
             self.surf,
-            [(flagx, flagy2), (flagx, flagy2 - 10), (flagx + 25, flagy2 - 5)],
-            (204, 204, 0),
+            int(cartx),
+            int(carty + axleoffset),
+            int(polewidth / 2),
+            (129, 132, 203),
         )
+        gfxdraw.filled_circle(
+            self.surf,
+            int(cartx),
+            int(carty + axleoffset),
+            int(polewidth / 2),
+            (129, 132, 203),
+        )
+
+        gfxdraw.hline(self.surf, 0, screen_width, carty, (0, 0, 0))
 
         self.surf = pygame.transform.flip(self.surf, False, True)
         self.screen.blit(self.surf, (0, 0))
@@ -235,10 +266,6 @@ class MountainCarEnv(gym.Env):
             )
         else:
             return self.isopen
-
-    def get_keys_to_action(self):
-        # Control with left and right arrow keys.
-        return {(): 1, (276,): 0, (275,): 2, (275, 276): 1}
 
     def close(self):
         if self.screen is not None:
